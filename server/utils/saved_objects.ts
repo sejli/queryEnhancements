@@ -3,18 +3,18 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { ALL_NAMESPACES_STRING } from 'src/core/server/saved_objects/service/lib/utils';
+import { ALL_NAMESPACES_STRING } from '../../../../src/core/server/saved_objects/service/lib/utils';
 import {
   ISavedObjectTypeRegistry,
   SavedObject,
   SavedObjectsErrorHelpers,
   SavedObjectsRawDoc,
   SavedObjectsUtils,
-} from 'src/core/server';
-import { DecoratedError } from 'src/core/server/saved_objects/service/lib/errors';
+} from '../../../../src/core/server';
+import { DecoratedError } from '../../../../src/core/server/saved_objects/service/lib/errors';
 import { opensearchtypes } from '@opensearch-project/opensearch/.';
-import { SavedObjectsRawDocSource } from 'src/core/server/saved_objects/serialization';
-import { decodeRequestVersion, encodeHitVersion } from 'src/core/server/saved_objects/version';
+import { SavedObjectsRawDocSource } from '../../../../src/core/server/saved_objects/serialization';
+import { decodeRequestVersion, encodeHitVersion } from '../../../../src/core/server/saved_objects/version';
 import { GetResponseFound } from '../types';
 
 export function getBulkOperationError(

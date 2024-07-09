@@ -10,6 +10,7 @@ import {
   ILegacyClusterClient,
   ISavedObjectTypeRegistry,
   MutatingOperationRefreshSetting,
+  OpenSearchClient,
   SavedObject,
   SavedObjectSanitizedDoc,
   SavedObjectTypeRegistry,
@@ -40,24 +41,24 @@ import {
   SavedObjectsUpdateOptions,
   SavedObjectsUpdateResponse,
   SavedObjectsUtils,
-} from 'src/core/server';
-import { IndexMapping, getRootPropertiesObjects } from 'src/core/server/saved_objects/mappings';
-import { IOpenSearchDashboardsMigrator } from 'src/core/server/saved_objects/migrations';
-import { SavedObjectsRawDocSource } from 'src/core/server/saved_objects/serialization';
-import { DecoratedError } from 'src/core/server/saved_objects/service/lib/errors';
-import { validateConvertFilterToKueryNode } from 'src/core/server/saved_objects/service/lib/filter_utils';
-import { includedFields } from 'src/core/server/saved_objects/service/lib/included_fields';
-import { getSearchDsl } from 'src/core/server/saved_objects/service/lib/search_dsl';
+} from '../../../../src/core/server';
+import { IndexMapping, getRootPropertiesObjects } from '../../../../src/core/server/saved_objects/mappings';
+import { IOpenSearchDashboardsMigrator } from '../../../../src/core/server/saved_objects/migrations';
+import { SavedObjectsRawDocSource } from '../../../../src/core/server/saved_objects/serialization';
+import { DecoratedError } from '../../../../src/core/server/saved_objects/service/lib/errors';
+import { validateConvertFilterToKueryNode } from '../../../../src/core/server/saved_objects/service/lib/filter_utils';
+import { includedFields } from '../../../../src/core/server/saved_objects/service/lib/included_fields';
+import { getSearchDsl } from '../../../../src/core/server/saved_objects/service/lib/search_dsl';
 import {
   ALL_NAMESPACES_STRING,
   FIND_DEFAULT_PAGE,
   FIND_DEFAULT_PER_PAGE,
-} from 'src/core/server/saved_objects/service/lib/utils';
+} from '../../../../src/core/server/saved_objects/service/lib/utils';
 import {
   decodeRequestVersion,
   encodeHitVersion,
   encodeVersion,
-} from 'src/core/server/saved_objects/version';
+} from '../../../../src/core/server/saved_objects/version';
 import uuid from 'uuid';
 import { OPENSEARCH_API } from '../../common';
 import {
@@ -67,7 +68,7 @@ import {
   IExternalSavedObjectsRepository,
 } from '../types';
 import { errorContent, isFoundGetResponse, normalizeNamespace, unique } from '../utils';
-import { getSavedObjectNamespaces } from '../utils/saved_objects';
+import { getSavedObjectFromSource, getSavedObjectNamespaces } from '../utils/saved_objects';
 
 // BEWARE: The SavedObjectClient depends on the implementation details of the SavedObjectsRepository
 // so any breaking changes to this repository are considered breaking changes to the SavedObjectsClient.
@@ -208,11 +209,11 @@ export class ExternalSavedObjectsRepository {
     const { body } =
       id && overwrite
         ? await this.client
-            .asScoped()
-            .callAsInternalUser(OPENSEARCH_API.DATA_CONNECTIONS, requestParams)
+          .asScoped()
+          .callAsInternalUser(OPENSEARCH_API.DATA_CONNECTIONS, requestParams)
         : await this.client
-            .asScoped()
-            .callAsInternalUser(OPENSEARCH_API.DATA_CONNECTIONS, requestParams);
+          .asScoped()
+          .callAsInternalUser(OPENSEARCH_API.DATA_CONNECTIONS, requestParams);
 
     return this._rawToSavedObject<T>({
       ...raw,
@@ -224,122 +225,124 @@ export class ExternalSavedObjectsRepository {
     objects: Array<SavedObjectsBulkCreateObject<T>>,
     options: SavedObjectsCreateOptions = {}
   ): Promise<SavedObjectsBulkResponse<T>> {
-    const namespace = normalizeNamespace(options.namespace);
-    // ToDo: Do validation of objects as we do in OpenSearch.
-    // For sake of POC, we are just inserting all object in a loop.
-    const query = `INSERT INTO metadatastore(id, type, version, attributes, reference, migrationversion, namespaces, originid, updated_at, application_id) VALUES `;
+    // const namespace = normalizeNamespace(options.namespace);
+    // // ToDo: Do validation of objects as we do in OpenSearch.
+    // // For sake of POC, we are just inserting all object in a loop.
+    // const query = `INSERT INTO metadatastore(id, type, version, attributes, reference, migrationversion, namespaces, originid, updated_at, application_id) VALUES `;
 
-    const expectedBulkResult = objects.map((object) => {
-      // const refresh = options.refresh; // We don't need refresh for SQL operation.
-      // ToDo: For now we are just storing version in table. Later we need to decide whether we want to use it for concurrency control or not.
-      const raw = this.getSavedObjectRawDoc(
-        object.type,
-        object.attributes,
-        object as SavedObjectsCreateOptions,
-        namespace,
-        []
-      );
+    // const expectedBulkResult = objects.map((object) => {
+    //   // const refresh = options.refresh; // We don't need refresh for SQL operation.
+    //   // ToDo: For now we are just storing version in table. Later we need to decide whether we want to use it for concurrency control or not.
+    //   const raw = this.getSavedObjectRawDoc(
+    //     object.type,
+    //     object.attributes,
+    //     object as SavedObjectsCreateOptions,
+    //     namespace,
+    //     []
+    //   );
 
-      const insertValuesExpr = `('${raw._id}', '${object.type}',
-      '${object.version ?? ''}', '${JSON.stringify(raw._source).replace(/'/g, `''`)}',
-      '${JSON.stringify(raw._source.references)}',
-      '${JSON.stringify(raw._source.migrationVersion ?? {})}',
-      ${raw._source.namespaces ? `ARRAY[${raw._source.namespaces}]` : `'{}'`},
-      '${raw._source.originId ?? ''}', '${raw._source.updated_at}', '${
-        this.applicationId ?? 'default'
-      }')`;
-      // ToDo: Decide if you want to keep raw._source or raw._source[type] in attributes field.
-      // Refactor code to insert all rows in single transaction.
-      this.postgresClient
-        .query(`${query} ${insertValuesExpr}`)
-        .then(() => {
-          console.log('Saved object inserted in kibana table successfully.');
-        })
-        .catch((error: any) => {
-          console.error(`error occurred for this query -> "${query} ${insertValuesExpr}"`);
-          throw new Error(error);
-        });
-      const expectedResult = { rawMigratedDoc: raw };
-      return { tag: 'Right' as 'Right', value: expectedResult };
-    });
+    //   const insertValuesExpr = `('${raw._id}', '${object.type}',
+    //   '${object.version ?? ''}', '${JSON.stringify(raw._source).replace(/'/g, `''`)}',
+    //   '${JSON.stringify(raw._source.references)}',
+    //   '${JSON.stringify(raw._source.migrationVersion ?? {})}',
+    //   ${raw._source.namespaces ? `ARRAY[${raw._source.namespaces}]` : `'{}'`},
+    //   '${raw._source.originId ?? ''}', '${raw._source.updated_at}', '${
+    //     this.applicationId ?? 'default'
+    //   }')`;
+    //   // ToDo: Decide if you want to keep raw._source or raw._source[type] in attributes field.
+    //   // Refactor code to insert all rows in single transaction.
+    //   this.postgresClient
+    //     .query(`${query} ${insertValuesExpr}`)
+    //     .then(() => {
+    //       console.log('Saved object inserted in kibana table successfully.');
+    //     })
+    //     .catch((error: any) => {
+    //       console.error(`error occurred for this query -> "${query} ${insertValuesExpr}"`);
+    //       throw new Error(error);
+    //     });
+    //   const expectedResult = { rawMigratedDoc: raw };
+    //   return { tag: 'Right' as 'Right', value: expectedResult };
+    // });
 
-    return {
-      saved_objects: expectedBulkResult.map((expectedResult) => {
-        // When method == 'index' the bulkResponse doesn't include the indexed
-        // _source so we return rawMigratedDoc but have to spread the latest
-        // _seq_no and _primary_term values from the rawResponse.
-        const { rawMigratedDoc } = expectedResult.value;
-        return this._rawToSavedObject({
-          ...rawMigratedDoc,
-        });
-      }),
-    };
+    // return {
+    //   saved_objects: expectedBulkResult.map((expectedResult) => {
+    //     // When method == 'index' the bulkResponse doesn't include the indexed
+    //     // _source so we return rawMigratedDoc but have to spread the latest
+    //     // _seq_no and _primary_term values from the rawResponse.
+    //     const { rawMigratedDoc } = expectedResult.value;
+    //     return this._rawToSavedObject({
+    //       ...rawMigratedDoc,
+    //     });
+    //   }),
+    // };
+    throw Error('not implemented: bulkCreate');
   }
 
   async checkConflicts(
     objects: SavedObjectsCheckConflictsObject[] = [],
     options: SavedObjectsBaseOptions = {}
   ): Promise<SavedObjectsCheckConflictsResponse> {
-    console.log(`Inside PostgresRepository checkConflicts`);
-    if (objects.length === 0) {
-      return { errors: [] };
-    }
+    // console.log(`Inside PostgresRepository checkConflicts`);
+    // if (objects.length === 0) {
+    //   return { errors: [] };
+    // }
 
-    const namespace = normalizeNamespace(options.namespace);
-    const errors: SavedObjectsCheckConflictsResponse['errors'] = [];
-    const expectedBulkGetResults = objects.map((object) => {
-      const { type, id } = object;
+    // const namespace = normalizeNamespace(options.namespace);
+    // const errors: SavedObjectsCheckConflictsResponse['errors'] = [];
+    // const expectedBulkGetResults = objects.map((object) => {
+    //   const { type, id } = object;
 
-      if (!this._allowedTypes.includes(type)) {
-        const error = {
-          id,
-          type,
-          error: errorContent(SavedObjectsErrorHelpers.createUnsupportedTypeError(type)),
-        };
-        errors.push(error);
-      }
+    //   if (!this._allowedTypes.includes(type)) {
+    //     const error = {
+    //       id,
+    //       type,
+    //       error: errorContent(SavedObjectsErrorHelpers.createUnsupportedTypeError(type)),
+    //     };
+    //     errors.push(error);
+    //   }
 
-      return {
-        value: {
-          type,
-          id,
-        },
-      };
-    });
-    let results: any;
-    await Promise.all(
-      expectedBulkGetResults.map(async ({ value: { type, id } }) => {
-        await this.postgresClient
-          .query(
-            `SELECT * FROM metadatastore where id='${this._serializer.generateRawId(
-              namespace,
-              type,
-              id
-            )}' and application_id='${this.applicationId ?? 'default'}'`
-          )
-          .then((res: any) => {
-            results = res.rows[0];
-            if (results && results.length > 0) {
-              errors.push({
-                id,
-                type,
-                error: {
-                  ...errorContent(SavedObjectsErrorHelpers.createConflictError(type, id)),
-                  // @ts-expect-error MultiGetHit._source is optional
-                  ...(!this.rawDocExistsInNamespace(doc!, namespace) && {
-                    metadata: { isNotOverwritable: true },
-                  }),
-                },
-              });
-            }
-          })
-          .catch((error: any) => {
-            throw new Error(error);
-          });
-      })
-    );
+    //   return {
+    //     value: {
+    //       type,
+    //       id,
+    //     },
+    //   };
+    // });
+    // let results: any;
+    // await Promise.all(
+    //   expectedBulkGetResults.map(async ({ value: { type, id } }) => {
+    //     await this.postgresClient
+    //       .query(
+    //         `SELECT * FROM metadatastore where id='${this._serializer.generateRawId(
+    //           namespace,
+    //           type,
+    //           id
+    //         )}' and application_id='${this.applicationId ?? 'default'}'`
+    //       )
+    //       .then((res: any) => {
+    //         results = res.rows[0];
+    //         if (results && results.length > 0) {
+    //           errors.push({
+    //             id,
+    //             type,
+    //             error: {
+    //               ...errorContent(SavedObjectsErrorHelpers.createConflictError(type, id)),
+    //               // @ts-expect-error MultiGetHit._source is optional
+    //               ...(!this.rawDocExistsInNamespace(doc!, namespace) && {
+    //                 metadata: { isNotOverwritable: true },
+    //               }),
+    //             },
+    //           });
+    //         }
+    //       })
+    //       .catch((error: any) => {
+    //         throw new Error(error);
+    //       });
+    //   })
+    // );
 
-    return { errors };
+    // return { errors };
+    throw Error('not implemented: checkConflicts');
   }
 
   /**
@@ -352,58 +355,59 @@ export class ExternalSavedObjectsRepository {
    * @returns {promise}
    */
   async delete(type: string, id: string, options: SavedObjectsDeleteOptions = {}): Promise<{}> {
-    if (!this._allowedTypes.includes(type)) {
-      throw SavedObjectsErrorHelpers.createGenericNotFoundError(type, id);
-    }
+    // if (!this._allowedTypes.includes(type)) {
+    //   throw SavedObjectsErrorHelpers.createGenericNotFoundError(type, id);
+    // }
 
-    const { refresh = DEFAULT_REFRESH_SETTING, force } = options;
-    const namespace = normalizeNamespace(options.namespace);
+    // const { refresh = DEFAULT_REFRESH_SETTING, force } = options;
+    // const namespace = normalizeNamespace(options.namespace);
 
-    const rawId = this._serializer.generateRawId(namespace, type, id);
-    let preflightResult: SavedObjectsRawDoc | undefined;
+    // const rawId = this._serializer.generateRawId(namespace, type, id);
+    // let preflightResult: SavedObjectsRawDoc | undefined;
 
-    if (this._registry.isMultiNamespace(type)) {
-      preflightResult = await this.preflightCheckIncludesNamespace(type, id, namespace);
-      const existingNamespaces = getSavedObjectNamespaces(undefined, preflightResult) ?? [];
-      if (
-        !force &&
-        (existingNamespaces.length > 1 || existingNamespaces.includes(ALL_NAMESPACES_STRING))
-      ) {
-        throw SavedObjectsErrorHelpers.createBadRequestError(
-          'Unable to delete saved object that exists in multiple namespaces, use the `force` option to delete it anyway'
-        );
-      }
-    }
+    // if (this._registry.isMultiNamespace(type)) {
+    //   preflightResult = await this.preflightCheckIncludesNamespace(type, id, namespace);
+    //   const existingNamespaces = getSavedObjectNamespaces(undefined, preflightResult) ?? [];
+    //   if (
+    //     !force &&
+    //     (existingNamespaces.length > 1 || existingNamespaces.includes(ALL_NAMESPACES_STRING))
+    //   ) {
+    //     throw SavedObjectsErrorHelpers.createBadRequestError(
+    //       'Unable to delete saved object that exists in multiple namespaces, use the `force` option to delete it anyway'
+    //     );
+    //   }
+    // }
 
-    const { body, statusCode } = await this.client.delete<DeleteDocumentResponse>(
-      {
-        id: rawId,
-        index: this.getIndexForType(type),
-        ...getExpectedVersionProperties(undefined, preflightResult),
-        refresh,
-      },
-      { ignore: [404] }
-    );
+    // const { body, statusCode } = await this.client.delete<DeleteDocumentResponse>(
+    //   {
+    //     id: rawId,
+    //     index: this.getIndexForType(type),
+    //     ...getExpectedVersionProperties(undefined, preflightResult),
+    //     refresh,
+    //   },
+    //   { ignore: [404] }
+    // );
 
-    const deleted = body.result === 'deleted';
-    if (deleted) {
-      return {};
-    }
+    // const deleted = body.result === 'deleted';
+    // if (deleted) {
+    //   return {};
+    // }
 
-    const deleteDocNotFound = body.result === 'not_found';
-    const deleteIndexNotFound = body.error && body.error.type === 'index_not_found_exception';
-    if (deleteDocNotFound || deleteIndexNotFound) {
-      // see "404s from missing index" above
-      throw SavedObjectsErrorHelpers.createGenericNotFoundError(type, id);
-    }
+    // const deleteDocNotFound = body.result === 'not_found';
+    // const deleteIndexNotFound = body.error && body.error.type === 'index_not_found_exception';
+    // if (deleteDocNotFound || deleteIndexNotFound) {
+    //   // see "404s from missing index" above
+    //   throw SavedObjectsErrorHelpers.createGenericNotFoundError(type, id);
+    // }
 
-    throw new Error(
-      `Unexpected OpenSearch DELETE response: ${JSON.stringify({
-        type,
-        id,
-        response: { body, statusCode },
-      })}`
-    );
+    // throw new Error(
+    //   `Unexpected OpenSearch DELETE response: ${JSON.stringify({
+    //     type,
+    //     id,
+    //     response: { body, statusCode },
+    //   })}`
+    // );
+    throw Error('not implemented: delete');
   }
 
   /**
@@ -416,43 +420,44 @@ export class ExternalSavedObjectsRepository {
     namespace: string,
     options: SavedObjectsDeleteByNamespaceOptions = {}
   ): Promise<any> {
-    if (!namespace || typeof namespace !== 'string' || namespace === '*') {
-      throw new TypeError(`namespace is required, and must be a string that is not equal to '*'`);
-    }
+    // if (!namespace || typeof namespace !== 'string' || namespace === '*') {
+    //   throw new TypeError(`namespace is required, and must be a string that is not equal to '*'`);
+    // }
 
-    const allTypes = Object.keys(getRootPropertiesObjects(this._mappings));
-    const typesToUpdate = allTypes.filter((type) => !this._registry.isNamespaceAgnostic(type));
+    // const allTypes = Object.keys(getRootPropertiesObjects(this._mappings));
+    // const typesToUpdate = allTypes.filter((type) => !this._registry.isNamespaceAgnostic(type));
 
-    const { body } = await this.client.updateByQuery(
-      {
-        index: this.getIndicesForTypes(typesToUpdate),
-        refresh: options.refresh,
-        body: {
-          script: {
-            source: `
-              if (!ctx._source.containsKey('namespaces')) {
-                ctx.op = "delete";
-              } else {
-                ctx._source['namespaces'].removeAll(Collections.singleton(params['namespace']));
-                if (ctx._source['namespaces'].empty) {
-                  ctx.op = "delete";
-                }
-              }
-            `,
-            lang: 'painless',
-            params: { namespace },
-          },
-          conflicts: 'proceed',
-          ...getSearchDsl(this._mappings, this._registry, {
-            namespaces: namespace ? [namespace] : undefined,
-            type: typesToUpdate,
-          }),
-        },
-      },
-      { ignore: [404] }
-    );
+    // const { body } = await this.client.updateByQuery(
+    //   {
+    //     index: this.getIndicesForTypes(typesToUpdate),
+    //     refresh: options.refresh,
+    //     body: {
+    //       script: {
+    //         source: `
+    //           if (!ctx._source.containsKey('namespaces')) {
+    //             ctx.op = "delete";
+    //           } else {
+    //             ctx._source['namespaces'].removeAll(Collections.singleton(params['namespace']));
+    //             if (ctx._source['namespaces'].empty) {
+    //               ctx.op = "delete";
+    //             }
+    //           }
+    //         `,
+    //         lang: 'painless',
+    //         params: { namespace },
+    //       },
+    //       conflicts: 'proceed',
+    //       ...getSearchDsl(this._mappings, this._registry, {
+    //         namespaces: namespace ? [namespace] : undefined,
+    //         type: typesToUpdate,
+    //       }),
+    //     },
+    //   },
+    //   { ignore: [404] }
+    // );
 
-    return body;
+    // return body;
+    throw Error('not implemented: deleteByNamepsace');
   }
 
   /**
@@ -466,42 +471,43 @@ export class ExternalSavedObjectsRepository {
     workspace: string,
     options: SavedObjectsDeleteByWorkspaceOptions = {}
   ): Promise<any> {
-    if (!workspace || typeof workspace !== 'string' || workspace === '*') {
-      throw new TypeError(`workspace is required, and must be a string that is not equal to '*'`);
-    }
+    // if (!workspace || typeof workspace !== 'string' || workspace === '*') {
+    //   throw new TypeError(`workspace is required, and must be a string that is not equal to '*'`);
+    // }
 
-    const allTypes = Object.keys(getRootPropertiesObjects(this._mappings));
+    // const allTypes = Object.keys(getRootPropertiesObjects(this._mappings));
 
-    const { body } = await this.client.updateByQuery(
-      {
-        index: this.getIndicesForTypes(allTypes),
-        refresh: options.refresh,
-        body: {
-          script: {
-            source: `
-              if (!ctx._source.containsKey('workspaces')) {
-                ctx.op = "delete";
-              } else {
-                ctx._source['workspaces'].removeAll(Collections.singleton(params['workspace']));
-                if (ctx._source['workspaces'].empty) {
-                  ctx.op = "delete";
-                }
-              }
-            `,
-            lang: 'painless',
-            params: { workspace },
-          },
-          conflicts: 'proceed',
-          ...getSearchDsl(this._mappings, this._registry, {
-            workspaces: [workspace],
-            type: allTypes,
-          }),
-        },
-      },
-      { ignore: [404] }
-    );
+    // const { body } = await this.client.updateByQuery(
+    //   {
+    //     index: this.getIndicesForTypes(allTypes),
+    //     refresh: options.refresh,
+    //     body: {
+    //       script: {
+    //         source: `
+    //           if (!ctx._source.containsKey('workspaces')) {
+    //             ctx.op = "delete";
+    //           } else {
+    //             ctx._source['workspaces'].removeAll(Collections.singleton(params['workspace']));
+    //             if (ctx._source['workspaces'].empty) {
+    //               ctx.op = "delete";
+    //             }
+    //           }
+    //         `,
+    //         lang: 'painless',
+    //         params: { workspace },
+    //       },
+    //       conflicts: 'proceed',
+    //       ...getSearchDsl(this._mappings, this._registry, {
+    //         workspaces: [workspace],
+    //         type: allTypes,
+    //       }),
+    //     },
+    //   },
+    //   { ignore: [404] }
+    // );
 
-    return body;
+    // return body;
+    throw Error('not implemented: deleteByWorkspace');
   }
 
   /**
@@ -672,76 +678,77 @@ export class ExternalSavedObjectsRepository {
     objects: SavedObjectsBulkGetObject[] = [],
     options: SavedObjectsBaseOptions = {}
   ): Promise<SavedObjectsBulkResponse<T>> {
-    const namespace = normalizeNamespace(options.namespace);
+    // const namespace = normalizeNamespace(options.namespace);
 
-    if (objects.length === 0) {
-      return { saved_objects: [] };
-    }
+    // if (objects.length === 0) {
+    //   return { saved_objects: [] };
+    // }
 
-    let bulkGetRequestIndexCounter = 0;
-    const expectedBulkGetResults: Either[] = objects.map((object) => {
-      const { type, id, fields } = object;
+    // let bulkGetRequestIndexCounter = 0;
+    // const expectedBulkGetResults: Either[] = objects.map((object) => {
+    //   const { type, id, fields } = object;
 
-      if (!this._allowedTypes.includes(type)) {
-        return {
-          tag: 'Left' as 'Left',
-          error: {
-            id,
-            type,
-            error: errorContent(SavedObjectsErrorHelpers.createUnsupportedTypeError(type)),
-          },
-        };
-      }
+    //   if (!this._allowedTypes.includes(type)) {
+    //     return {
+    //       tag: 'Left' as 'Left',
+    //       error: {
+    //         id,
+    //         type,
+    //         error: errorContent(SavedObjectsErrorHelpers.createUnsupportedTypeError(type)),
+    //       },
+    //     };
+    //   }
 
-      return {
-        tag: 'Right' as 'Right',
-        value: {
-          type,
-          id,
-          fields,
-          opensearchRequestIndex: bulkGetRequestIndexCounter++,
-        },
-      };
-    });
+    //   return {
+    //     tag: 'Right' as 'Right',
+    //     value: {
+    //       type,
+    //       id,
+    //       fields,
+    //       opensearchRequestIndex: bulkGetRequestIndexCounter++,
+    //     },
+    //   };
+    // });
 
-    const bulkGetDocs = expectedBulkGetResults
-      .filter(isRight)
-      .map(({ value: { type, id, fields } }) => ({
-        _id: this._serializer.generateRawId(namespace, type, id),
-        _index: this.getIndexForType(type),
-        _source: includedFields(type, fields),
-      }));
-    const bulkGetResponse = bulkGetDocs.length
-      ? await this.client.mget(
-          {
-            body: {
-              docs: bulkGetDocs,
-            },
-          },
-          { ignore: [404] }
-        )
-      : undefined;
+    // const bulkGetDocs = expectedBulkGetResults
+    //   .filter(isRight)
+    //   .map(({ value: { type, id, fields } }) => ({
+    //     _id: this._serializer.generateRawId(namespace, type, id),
+    //     _index: this.getIndexForType(type),
+    //     _source: includedFields(type, fields),
+    //   }));
+    // const bulkGetResponse = bulkGetDocs.length
+    //   ? await this.client.mget(
+    //       {
+    //         body: {
+    //           docs: bulkGetDocs,
+    //         },
+    //       },
+    //       { ignore: [404] }
+    //     )
+    //   : undefined;
 
-    return {
-      saved_objects: expectedBulkGetResults.map((expectedResult) => {
-        if (isLeft(expectedResult)) {
-          return expectedResult.error as any;
-        }
+    // return {
+    //   saved_objects: expectedBulkGetResults.map((expectedResult) => {
+    //     if (isLeft(expectedResult)) {
+    //       return expectedResult.error as any;
+    //     }
 
-        const { type, id, opensearchRequestIndex } = expectedResult.value;
-        const doc = bulkGetResponse?.body.docs[opensearchRequestIndex];
+    //     const { type, id, opensearchRequestIndex } = expectedResult.value;
+    //     const doc = bulkGetResponse?.body.docs[opensearchRequestIndex];
 
-        if (!doc?.found || !this.rawDocExistsInNamespace(doc, namespace)) {
-          return ({
-            id,
-            type,
-            error: errorContent(SavedObjectsErrorHelpers.createGenericNotFoundError(type, id)),
-          } as any) as SavedObject<T>;
-        }
+    //     if (!doc?.found || !this.rawDocExistsInNamespace(doc, namespace)) {
+    //       return ({
+    //         id,
+    //         type,
+    //         error: errorContent(SavedObjectsErrorHelpers.createGenericNotFoundError(type, id)),
+    //       } as any) as SavedObject<T>;
+    //     }
 
-        return getSavedObjectFromSource(this._registry, type, id, doc);
-      }),
-    };
+    //     return getSavedObjectFromSource(this._registry, type, id, doc);
+    //   }),
+    // };
+    throw Error('not implemented: bulkGet');
   }
 
   /**
@@ -759,51 +766,73 @@ export class ExternalSavedObjectsRepository {
     options: SavedObjectsBaseOptions = {}
   ): Promise<SavedObject<T>> {
     if (!this._allowedTypes.includes(type)) {
-      throw SavedObjectsErrorHelpers.createGenericNotFoundError(type, id);
+      console.log('in not allowed types');
+      const error = SavedObjectsErrorHelpers.decorateForbiddenError(new Error(`flint: not found in allowed types: ${type}`));
+      console.log('message:', error.message);
+      // throw error;
+      return {
+        id,
+        type,
+        attributes: {},
+      } as SavedObject<T>;
+      // throw SavedObjectsErrorHelpers.createGenericNotFoundError(type, id);
     }
+    // if (type !== 'datasource') {
+    //   console.log("doesn't include datasource");
+    //   const error = new Error();
+    //   throw SavedObjectsErrorHelpers.isForbiddenError(error);
+    //   throw SavedObjectsErrorHelpers.createGenericNotFoundError(type, id);
+    // }
 
     const namespace = normalizeNamespace(options.namespace);
 
-    const { body, statusCode } = await this.client.get<SavedObjectsRawDocSource>(
-      {
-        id: this._serializer.generateRawId(namespace, type, id),
-        index: this.getIndexForType(type),
-      },
-      { ignore: [404] }
-    );
+    try {
+      console.log('id:', id);
+      console.log('options:', options);
+      const resp = await this.client.asScoped().callAsInternalUser('ppl.getDataConnectionById', { dataconnection: id.replace('data-source/', '') });
+      console.log('response is:', resp);
+      // console.log('external repository body:', body);
+      // console.log('external repository status:', statusCode);
 
-    const indexNotFound = statusCode === 404;
-    if (
-      !isFoundGetResponse(body) ||
-      indexNotFound ||
-      !this.rawDocExistsInNamespace(body, namespace)
-    ) {
-      // see "404s from missing index" above
+      const indexNotFound = statusCode === 404;
+      if (
+        !isFoundGetResponse(body) ||
+        indexNotFound //||
+        // !this.rawDocExistsInNamespace(body, namespace)ƒ
+      ) {
+        // see "404s from missing index" above
+        throw SavedObjectsErrorHelpers.createGenericNotFoundError(type, id);
+      }
+
+      const { originId, updated_at: updatedAt, permissions, workspaces } = body._source;
+
+      let namespaces: string[] = [];
+      if (!this._registry.isNamespaceAgnostic(type)) {
+        namespaces = body._source.namespaces ?? [
+          SavedObjectsUtils.namespaceIdToString(body._source.namespace),
+        ];
+      }
+
+      return {
+        id,
+        type,
+        namespaces,
+        ...(originId && { originId }),
+        ...(updatedAt && { updated_at: updatedAt }),
+        ...(permissions && { permissions }),
+        ...(workspaces && { workspaces }),
+        version: encodeHitVersion(body),
+        attributes: body._source[type],
+        references: body._source.references || [],
+        migrationVersion: body._source.migrationVersion,
+      };
+    } catch (e) {
+      console.log('found error');
+      console.log(e);
       throw SavedObjectsErrorHelpers.createGenericNotFoundError(type, id);
+      // throw Error('Request Error:', e);
     }
-
-    const { originId, updated_at: updatedAt, permissions, workspaces } = body._source;
-
-    let namespaces: string[] = [];
-    if (!this._registry.isNamespaceAgnostic(type)) {
-      namespaces = body._source.namespaces ?? [
-        SavedObjectsUtils.namespaceIdToString(body._source.namespace),
-      ];
-    }
-
-    return {
-      id,
-      type,
-      namespaces,
-      ...(originId && { originId }),
-      ...(updatedAt && { updated_at: updatedAt }),
-      ...(permissions && { permissions }),
-      ...(workspaces && { workspaces }),
-      version: encodeHitVersion(body),
-      attributes: body._source[type],
-      references: body._source.references || [],
-      migrationVersion: body._source.migrationVersion,
-    };
+    // throw Error('not implemented: get');
   }
 
   /**
@@ -823,66 +852,67 @@ export class ExternalSavedObjectsRepository {
     attributes: Partial<T>,
     options: SavedObjectsUpdateOptions = {}
   ): Promise<SavedObjectsUpdateResponse<T>> {
-    if (!this._allowedTypes.includes(type)) {
-      throw SavedObjectsErrorHelpers.createGenericNotFoundError(type, id);
-    }
+    // if (!this._allowedTypes.includes(type)) {
+    //   throw SavedObjectsErrorHelpers.createGenericNotFoundError(type, id);
+    // }
 
-    const { version, references, refresh = DEFAULT_REFRESH_SETTING, permissions } = options;
-    const namespace = normalizeNamespace(options.namespace);
+    // const { version, references, refresh = DEFAULT_REFRESH_SETTING, permissions } = options;
+    // const namespace = normalizeNamespace(options.namespace);
 
-    let preflightResult: SavedObjectsRawDoc | undefined;
-    if (this._registry.isMultiNamespace(type)) {
-      preflightResult = await this.preflightCheckIncludesNamespace(type, id, namespace);
-    }
+    // let preflightResult: SavedObjectsRawDoc | undefined;
+    // if (this._registry.isMultiNamespace(type)) {
+    //   preflightResult = await this.preflightCheckIncludesNamespace(type, id, namespace);
+    // }
 
-    const time = this._getCurrentTime();
+    // const time = this._getCurrentTime();
 
-    const doc = {
-      [type]: attributes,
-      updated_at: time,
-      ...(Array.isArray(references) && { references }),
-      ...(permissions && { permissions }),
-    };
+    // const doc = {
+    //   [type]: attributes,
+    //   updated_at: time,
+    //   ...(Array.isArray(references) && { references }),
+    //   ...(permissions && { permissions }),
+    // };
 
-    const { body, statusCode } = await this.client.update<SavedObjectsRawDocSource>(
-      {
-        id: this._serializer.generateRawId(namespace, type, id),
-        index: this.getIndexForType(type),
-        ...getExpectedVersionProperties(version, preflightResult),
-        refresh,
+    // const { body, statusCode } = await this.client.update<SavedObjectsRawDocSource>(
+    //   {
+    //     id: this._serializer.generateRawId(namespace, type, id),
+    //     index: this.getIndexForType(type),
+    //     ...getExpectedVersionProperties(version, preflightResult),
+    //     refresh,
 
-        body: {
-          doc,
-        },
-        _source_includes: ['namespace', 'namespaces', 'originId'],
-      },
-      { ignore: [404] }
-    );
+    //     body: {
+    //       doc,
+    //     },
+    //     _source_includes: ['namespace', 'namespaces', 'originId'],
+    //   },
+    //   { ignore: [404] }
+    // );
 
-    if (statusCode === 404) {
-      // see "404s from missing index" above
-      throw SavedObjectsErrorHelpers.createGenericNotFoundError(type, id);
-    }
+    // if (statusCode === 404) {
+    //   // see "404s from missing index" above
+    //   throw SavedObjectsErrorHelpers.createGenericNotFoundError(type, id);
+    // }
 
-    const { originId } = body.get?._source ?? {};
-    let namespaces: string[] = [];
-    if (!this._registry.isNamespaceAgnostic(type)) {
-      namespaces = body.get?._source.namespaces ?? [
-        SavedObjectsUtils.namespaceIdToString(body.get?._source.namespace),
-      ];
-    }
+    // const { originId } = body.get?._source ?? {};
+    // let namespaces: string[] = [];
+    // if (!this._registry.isNamespaceAgnostic(type)) {
+    //   namespaces = body.get?._source.namespaces ?? [
+    //     SavedObjectsUtils.namespaceIdToString(body.get?._source.namespace),
+    //   ];
+    // }
 
-    return {
-      id,
-      type,
-      updated_at: time,
-      version: encodeHitVersion(body),
-      namespaces,
-      ...(originId && { originId }),
-      ...(permissions && { permissions }),
-      references,
-      attributes,
-    };
+    // return {
+    //   id,
+    //   type,
+    //   updated_at: time,
+    //   version: encodeHitVersion(body),
+    //   namespaces,
+    //   ...(originId && { originId }),
+    //   ...(permissions && { permissions }),
+    //   references,
+    //   attributes,
+    // };
+    throw Error('not implemented: update');
   }
 
   /**
@@ -896,56 +926,57 @@ export class ExternalSavedObjectsRepository {
     namespaces: string[],
     options: SavedObjectsAddToNamespacesOptions = {}
   ): Promise<SavedObjectsAddToNamespacesResponse> {
-    if (!this._allowedTypes.includes(type)) {
-      throw SavedObjectsErrorHelpers.createGenericNotFoundError(type, id);
-    }
+    // if (!this._allowedTypes.includes(type)) {
+    //   throw SavedObjectsErrorHelpers.createGenericNotFoundError(type, id);
+    // }
 
-    if (!this._registry.isMultiNamespace(type)) {
-      throw SavedObjectsErrorHelpers.createBadRequestError(
-        `${type} doesn't support multiple namespaces`
-      );
-    }
+    // if (!this._registry.isMultiNamespace(type)) {
+    //   throw SavedObjectsErrorHelpers.createBadRequestError(
+    //     `${type} doesn't support multiple namespaces`
+    //   );
+    // }
 
-    if (!namespaces.length) {
-      throw SavedObjectsErrorHelpers.createBadRequestError(
-        'namespaces must be a non-empty array of strings'
-      );
-    }
+    // if (!namespaces.length) {
+    //   throw SavedObjectsErrorHelpers.createBadRequestError(
+    //     'namespaces must be a non-empty array of strings'
+    //   );
+    // }
 
-    const { version, namespace, refresh = DEFAULT_REFRESH_SETTING } = options;
-    // we do not need to normalize the namespace to its ID format, since it will be converted to a namespace string before being used
+    // const { version, namespace, refresh = DEFAULT_REFRESH_SETTING } = options;
+    // // we do not need to normalize the namespace to its ID format, since it will be converted to a namespace string before being used
 
-    const rawId = this._serializer.generateRawId(undefined, type, id);
-    const preflightResult = await this.preflightCheckIncludesNamespace(type, id, namespace);
-    const existingNamespaces = getSavedObjectNamespaces(undefined, preflightResult);
-    // there should never be a case where a multi-namespace object does not have any existing namespaces
-    // however, it is a possibility if someone manually modifies the document in OpenSearch
-    const time = this._getCurrentTime();
+    // const rawId = this._serializer.generateRawId(undefined, type, id);
+    // const preflightResult = await this.preflightCheckIncludesNamespace(type, id, namespace);
+    // const existingNamespaces = getSavedObjectNamespaces(undefined, preflightResult);
+    // // there should never be a case where a multi-namespace object does not have any existing namespaces
+    // // however, it is a possibility if someone manually modifies the document in OpenSearch
+    // const time = this._getCurrentTime();
 
-    const doc = {
-      updated_at: time,
-      namespaces: existingNamespaces ? unique(existingNamespaces.concat(namespaces)) : namespaces,
-    };
+    // const doc = {
+    //   updated_at: time,
+    //   namespaces: existingNamespaces ? unique(existingNamespaces.concat(namespaces)) : namespaces,
+    // };
 
-    const { statusCode } = await this.client.update(
-      {
-        id: rawId,
-        index: this.getIndexForType(type),
-        ...getExpectedVersionProperties(version, preflightResult),
-        refresh,
-        body: {
-          doc,
-        },
-      },
-      { ignore: [404] }
-    );
+    // const { statusCode } = await this.client.update(
+    //   {
+    //     id: rawId,
+    //     index: this.getIndexForType(type),
+    //     ...getExpectedVersionProperties(version, preflightResult),
+    //     refresh,
+    //     body: {
+    //       doc,
+    //     },
+    //   },
+    //   { ignore: [404] }
+    // );
 
-    if (statusCode === 404) {
-      // see "404s from missing index" above
-      throw SavedObjectsErrorHelpers.createGenericNotFoundError(type, id);
-    }
+    // if (statusCode === 404) {
+    //   // see "404s from missing index" above
+    //   throw SavedObjectsErrorHelpers.createGenericNotFoundError(type, id);
+    // }
 
-    return { namespaces: doc.namespaces };
+    // return { namespaces: doc.namespaces };
+    throw Error('not implemented: addToNameSpaces');
   }
 
   /**
@@ -959,95 +990,96 @@ export class ExternalSavedObjectsRepository {
     namespaces: string[],
     options: SavedObjectsDeleteFromNamespacesOptions = {}
   ): Promise<SavedObjectsDeleteFromNamespacesResponse> {
-    if (!this._allowedTypes.includes(type)) {
-      throw SavedObjectsErrorHelpers.createGenericNotFoundError(type, id);
-    }
+    // if (!this._allowedTypes.includes(type)) {
+    //   throw SavedObjectsErrorHelpers.createGenericNotFoundError(type, id);
+    // }
 
-    if (!this._registry.isMultiNamespace(type)) {
-      throw SavedObjectsErrorHelpers.createBadRequestError(
-        `${type} doesn't support multiple namespaces`
-      );
-    }
+    // if (!this._registry.isMultiNamespace(type)) {
+    //   throw SavedObjectsErrorHelpers.createBadRequestError(
+    //     `${type} doesn't support multiple namespaces`
+    //   );
+    // }
 
-    if (!namespaces.length) {
-      throw SavedObjectsErrorHelpers.createBadRequestError(
-        'namespaces must be a non-empty array of strings'
-      );
-    }
+    // if (!namespaces.length) {
+    //   throw SavedObjectsErrorHelpers.createBadRequestError(
+    //     'namespaces must be a non-empty array of strings'
+    //   );
+    // }
 
-    const { namespace, refresh = DEFAULT_REFRESH_SETTING } = options;
-    // we do not need to normalize the namespace to its ID format, since it will be converted to a namespace string before being used
+    // const { namespace, refresh = DEFAULT_REFRESH_SETTING } = options;
+    // // we do not need to normalize the namespace to its ID format, since it will be converted to a namespace string before being used
 
-    const rawId = this._serializer.generateRawId(undefined, type, id);
-    const preflightResult = await this.preflightCheckIncludesNamespace(type, id, namespace);
-    const existingNamespaces = getSavedObjectNamespaces(undefined, preflightResult);
-    // if there are somehow no existing namespaces, allow the operation to proceed and delete this saved object
-    const remainingNamespaces = existingNamespaces?.filter((x) => !namespaces.includes(x));
+    // const rawId = this._serializer.generateRawId(undefined, type, id);
+    // const preflightResult = await this.preflightCheckIncludesNamespace(type, id, namespace);
+    // const existingNamespaces = getSavedObjectNamespaces(undefined, preflightResult);
+    // // if there are somehow no existing namespaces, allow the operation to proceed and delete this saved object
+    // const remainingNamespaces = existingNamespaces?.filter((x) => !namespaces.includes(x));
 
-    if (remainingNamespaces?.length) {
-      // if there is 1 or more namespace remaining, update the saved object
-      const time = this._getCurrentTime();
+    // if (remainingNamespaces?.length) {
+    //   // if there is 1 or more namespace remaining, update the saved object
+    //   const time = this._getCurrentTime();
 
-      const doc = {
-        updated_at: time,
-        namespaces: remainingNamespaces,
-      };
+    //   const doc = {
+    //     updated_at: time,
+    //     namespaces: remainingNamespaces,
+    //   };
 
-      const { statusCode } = await this.client.update(
-        {
-          id: rawId,
-          index: this.getIndexForType(type),
-          ...getExpectedVersionProperties(undefined, preflightResult),
-          refresh,
+    //   const { statusCode } = await this.client.update(
+    //     {
+    //       id: rawId,
+    //       index: this.getIndexForType(type),
+    //       ...getExpectedVersionProperties(undefined, preflightResult),
+    //       refresh,
 
-          body: {
-            doc,
-          },
-        },
-        {
-          ignore: [404],
-        }
-      );
+    //       body: {
+    //         doc,
+    //       },
+    //     },
+    //     {
+    //       ignore: [404],
+    //     }
+    //   );
 
-      if (statusCode === 404) {
-        // see "404s from missing index" above
-        throw SavedObjectsErrorHelpers.createGenericNotFoundError(type, id);
-      }
-      return { namespaces: doc.namespaces };
-    } else {
-      // if there are no namespaces remaining, delete the saved object
-      const { body, statusCode } = await this.client.delete<DeleteDocumentResponse>(
-        {
-          id: this._serializer.generateRawId(undefined, type, id),
-          refresh,
-          ...getExpectedVersionProperties(undefined, preflightResult),
-          index: this.getIndexForType(type),
-        },
-        {
-          ignore: [404],
-        }
-      );
+    //   if (statusCode === 404) {
+    //     // see "404s from missing index" above
+    //     throw SavedObjectsErrorHelpers.createGenericNotFoundError(type, id);
+    //   }
+    //   return { namespaces: doc.namespaces };
+    // } else {
+    //   // if there are no namespaces remaining, delete the saved object
+    //   const { body, statusCode } = await this.client.delete<DeleteDocumentResponse>(
+    //     {
+    //       id: this._serializer.generateRawId(undefined, type, id),
+    //       refresh,
+    //       ...getExpectedVersionProperties(undefined, preflightResult),
+    //       index: this.getIndexForType(type),
+    //     },
+    //     {
+    //       ignore: [404],
+    //     }
+    //   );
 
-      const deleted = body.result === 'deleted';
-      if (deleted) {
-        return { namespaces: [] };
-      }
+    //   const deleted = body.result === 'deleted';
+    //   if (deleted) {
+    //     return { namespaces: [] };
+    //   }
 
-      const deleteDocNotFound = body.result === 'not_found';
-      const deleteIndexNotFound = body.error && body.error.type === 'index_not_found_exception';
-      if (deleteDocNotFound || deleteIndexNotFound) {
-        // see "404s from missing index" above
-        throw SavedObjectsErrorHelpers.createGenericNotFoundError(type, id);
-      }
+    //   const deleteDocNotFound = body.result === 'not_found';
+    //   const deleteIndexNotFound = body.error && body.error.type === 'index_not_found_exception';
+    //   if (deleteDocNotFound || deleteIndexNotFound) {
+    //     // see "404s from missing index" above
+    //     throw SavedObjectsErrorHelpers.createGenericNotFoundError(type, id);
+    //   }
 
-      throw new Error(
-        `Unexpected OpenSearch DELETE response: ${JSON.stringify({
-          type,
-          id,
-          response: { body, statusCode },
-        })}`
-      );
-    }
+    //   throw new Error(
+    //     `Unexpected OpenSearch DELETE response: ${JSON.stringify({
+    //       type,
+    //       id,
+    //       response: { body, statusCode },
+    //     })}`
+    //   );
+    // }
+    throw Error('not implemented: deleteFromNamespaces');
   }
 
   /**
@@ -1062,218 +1094,219 @@ export class ExternalSavedObjectsRepository {
     objects: Array<SavedObjectsBulkUpdateObject<T>>,
     options: SavedObjectsBulkUpdateOptions = {}
   ): Promise<SavedObjectsBulkUpdateResponse<T>> {
-    const time = this._getCurrentTime();
-    const namespace = normalizeNamespace(options.namespace);
+    // const time = this._getCurrentTime();
+    // const namespace = normalizeNamespace(options.namespace);
 
-    let bulkGetRequestIndexCounter = 0;
-    const expectedBulkGetResults: Either[] = objects.map((object) => {
-      const { type, id } = object;
+    // let bulkGetRequestIndexCounter = 0;
+    // const expectedBulkGetResults: Either[] = objects.map((object) => {
+    //   const { type, id } = object;
 
-      if (!this._allowedTypes.includes(type)) {
-        return {
-          tag: 'Left' as 'Left',
-          error: {
-            id,
-            type,
-            error: errorContent(SavedObjectsErrorHelpers.createGenericNotFoundError(type, id)),
-          },
-        };
-      }
+    //   if (!this._allowedTypes.includes(type)) {
+    //     return {
+    //       tag: 'Left' as 'Left',
+    //       error: {
+    //         id,
+    //         type,
+    //         error: errorContent(SavedObjectsErrorHelpers.createGenericNotFoundError(type, id)),
+    //       },
+    //     };
+    //   }
 
-      const { attributes, references, version, namespace: objectNamespace, permissions } = object;
+    //   const { attributes, references, version, namespace: objectNamespace, permissions } = object;
 
-      if (objectNamespace === ALL_NAMESPACES_STRING) {
-        return {
-          tag: 'Left' as 'Left',
-          error: {
-            id,
-            type,
-            error: errorContent(
-              SavedObjectsErrorHelpers.createBadRequestError('"namespace" cannot be "*"')
-            ),
-          },
-        };
-      }
-      // `objectNamespace` is a namespace string, while `namespace` is a namespace ID.
-      // The object namespace string, if defined, will supersede the operation's namespace ID.
+    //   if (objectNamespace === ALL_NAMESPACES_STRING) {
+    //     return {
+    //       tag: 'Left' as 'Left',
+    //       error: {
+    //         id,
+    //         type,
+    //         error: errorContent(
+    //           SavedObjectsErrorHelpers.createBadRequestError('"namespace" cannot be "*"')
+    //         ),
+    //       },
+    //     };
+    //   }
+    //   // `objectNamespace` is a namespace string, while `namespace` is a namespace ID.
+    //   // The object namespace string, if defined, will supersede the operation's namespace ID.
 
-      const documentToSave = {
-        [type]: attributes,
-        updated_at: time,
-        ...(Array.isArray(references) && { references }),
-        ...(permissions && { permissions }),
-      };
+    //   const documentToSave = {
+    //     [type]: attributes,
+    //     updated_at: time,
+    //     ...(Array.isArray(references) && { references }),
+    //     ...(permissions && { permissions }),
+    //   };
 
-      const requiresNamespacesCheck = this._registry.isMultiNamespace(object.type);
+    //   const requiresNamespacesCheck = this._registry.isMultiNamespace(object.type);
 
-      return {
-        tag: 'Right' as 'Right',
-        value: {
-          type,
-          id,
-          version,
-          documentToSave,
-          objectNamespace,
-          ...(requiresNamespacesCheck && { opensearchRequestIndex: bulkGetRequestIndexCounter++ }),
-        },
-      };
-    });
+    //   return {
+    //     tag: 'Right' as 'Right',
+    //     value: {
+    //       type,
+    //       id,
+    //       version,
+    //       documentToSave,
+    //       objectNamespace,
+    //       ...(requiresNamespacesCheck && { opensearchRequestIndex: bulkGetRequestIndexCounter++ }),
+    //     },
+    //   };
+    // });
 
-    const getNamespaceId = (objectNamespace?: string) =>
-      objectNamespace !== undefined
-        ? SavedObjectsUtils.namespaceStringToId(objectNamespace)
-        : namespace;
-    const getNamespaceString = (objectNamespace?: string) =>
-      objectNamespace ?? SavedObjectsUtils.namespaceIdToString(namespace);
+    // const getNamespaceId = (objectNamespace?: string) =>
+    //   objectNamespace !== undefined
+    //     ? SavedObjectsUtils.namespaceStringToId(objectNamespace)
+    //     : namespace;
+    // const getNamespaceString = (objectNamespace?: string) =>
+    //   objectNamespace ?? SavedObjectsUtils.namespaceIdToString(namespace);
 
-    const bulkGetDocs = expectedBulkGetResults
-      .filter(isRight)
-      .filter(({ value }) => value.opensearchRequestIndex !== undefined)
-      .map(({ value: { type, id, objectNamespace } }) => ({
-        _id: this._serializer.generateRawId(getNamespaceId(objectNamespace), type, id),
-        _index: this.getIndexForType(type),
-        _source: ['type', 'namespaces'],
-      }));
-    const bulkGetResponse = bulkGetDocs.length
-      ? await this.client.mget(
-          {
-            body: {
-              docs: bulkGetDocs,
-            },
-          },
-          {
-            ignore: [404],
-          }
-        )
-      : undefined;
+    // const bulkGetDocs = expectedBulkGetResults
+    //   .filter(isRight)
+    //   .filter(({ value }) => value.opensearchRequestIndex !== undefined)
+    //   .map(({ value: { type, id, objectNamespace } }) => ({
+    //     _id: this._serializer.generateRawId(getNamespaceId(objectNamespace), type, id),
+    //     _index: this.getIndexForType(type),
+    //     _source: ['type', 'namespaces'],
+    //   }));
+    // const bulkGetResponse = bulkGetDocs.length
+    //   ? await this.client.mget(
+    //       {
+    //         body: {
+    //           docs: bulkGetDocs,
+    //         },
+    //       },
+    //       {
+    //         ignore: [404],
+    //       }
+    //     )
+    //   : undefined;
 
-    let bulkUpdateRequestIndexCounter = 0;
-    const bulkUpdateParams: object[] = [];
-    const expectedBulkUpdateResults: Either[] = expectedBulkGetResults.map(
-      (expectedBulkGetResult) => {
-        if (isLeft(expectedBulkGetResult)) {
-          return expectedBulkGetResult;
-        }
+    // let bulkUpdateRequestIndexCounter = 0;
+    // const bulkUpdateParams: object[] = [];
+    // const expectedBulkUpdateResults: Either[] = expectedBulkGetResults.map(
+    //   (expectedBulkGetResult) => {
+    //     if (isLeft(expectedBulkGetResult)) {
+    //       return expectedBulkGetResult;
+    //     }
 
-        const {
-          opensearchRequestIndex,
-          id,
-          type,
-          version,
-          documentToSave,
-          objectNamespace,
-        } = expectedBulkGetResult.value;
+    //     const {
+    //       opensearchRequestIndex,
+    //       id,
+    //       type,
+    //       version,
+    //       documentToSave,
+    //       objectNamespace,
+    //     } = expectedBulkGetResult.value;
 
-        let namespaces;
-        let versionProperties;
-        if (opensearchRequestIndex !== undefined) {
-          const indexFound = bulkGetResponse?.statusCode !== 404;
-          const actualResult = indexFound
-            ? bulkGetResponse?.body.docs[opensearchRequestIndex]
-            : undefined;
-          const docFound = indexFound && actualResult?.found === true;
-          if (
-            !docFound ||
-            !this.rawDocExistsInNamespace(actualResult, getNamespaceId(objectNamespace))
-          ) {
-            return {
-              tag: 'Left' as 'Left',
-              error: {
-                id,
-                type,
-                error: errorContent(SavedObjectsErrorHelpers.createGenericNotFoundError(type, id)),
-              },
-            };
-          }
-          namespaces = actualResult!._source.namespaces ?? [
-            SavedObjectsUtils.namespaceIdToString(actualResult!._source.namespace),
-          ];
+    //     let namespaces;
+    //     let versionProperties;
+    //     if (opensearchRequestIndex !== undefined) {
+    //       const indexFound = bulkGetResponse?.statusCode !== 404;
+    //       const actualResult = indexFound
+    //         ? bulkGetResponse?.body.docs[opensearchRequestIndex]
+    //         : undefined;
+    //       const docFound = indexFound && actualResult?.found === true;
+    //       if (
+    //         !docFound ||
+    //         !this.rawDocExistsInNamespace(actualResult, getNamespaceId(objectNamespace))
+    //       ) {
+    //         return {
+    //           tag: 'Left' as 'Left',
+    //           error: {
+    //             id,
+    //             type,
+    //             error: errorContent(SavedObjectsErrorHelpers.createGenericNotFoundError(type, id)),
+    //           },
+    //         };
+    //       }
+    //       namespaces = actualResult!._source.namespaces ?? [
+    //         SavedObjectsUtils.namespaceIdToString(actualResult!._source.namespace),
+    //       ];
 
-          versionProperties = getExpectedVersionProperties(version, actualResult);
-        } else {
-          if (this._registry.isSingleNamespace(type)) {
-            // if `objectNamespace` is undefined, fall back to `options.namespace`
-            namespaces = [getNamespaceString(objectNamespace)];
-          }
-          versionProperties = getExpectedVersionProperties(version);
-        }
+    //       versionProperties = getExpectedVersionProperties(version, actualResult);
+    //     } else {
+    //       if (this._registry.isSingleNamespace(type)) {
+    //         // if `objectNamespace` is undefined, fall back to `options.namespace`
+    //         namespaces = [getNamespaceString(objectNamespace)];
+    //       }
+    //       versionProperties = getExpectedVersionProperties(version);
+    //     }
 
-        const expectedResult = {
-          type,
-          id,
-          namespaces,
-          opensearchRequestIndex: bulkUpdateRequestIndexCounter++,
-          documentToSave: expectedBulkGetResult.value.documentToSave,
-        };
+    //     const expectedResult = {
+    //       type,
+    //       id,
+    //       namespaces,
+    //       opensearchRequestIndex: bulkUpdateRequestIndexCounter++,
+    //       documentToSave: expectedBulkGetResult.value.documentToSave,
+    //     };
 
-        bulkUpdateParams.push(
-          {
-            update: {
-              _id: this._serializer.generateRawId(getNamespaceId(objectNamespace), type, id),
-              _index: this.getIndexForType(type),
-              ...versionProperties,
-            },
-          },
-          { doc: documentToSave }
-        );
+    //     bulkUpdateParams.push(
+    //       {
+    //         update: {
+    //           _id: this._serializer.generateRawId(getNamespaceId(objectNamespace), type, id),
+    //           _index: this.getIndexForType(type),
+    //           ...versionProperties,
+    //         },
+    //       },
+    //       { doc: documentToSave }
+    //     );
 
-        return { tag: 'Right' as 'Right', value: expectedResult };
-      }
-    );
+    //     return { tag: 'Right' as 'Right', value: expectedResult };
+    //   }
+    // );
 
-    const { refresh = DEFAULT_REFRESH_SETTING } = options;
-    const bulkUpdateResponse = bulkUpdateParams.length
-      ? await this.client.bulk({
-          refresh,
-          body: bulkUpdateParams,
-          _source_includes: ['originId'],
-        })
-      : undefined;
+    // const { refresh = DEFAULT_REFRESH_SETTING } = options;
+    // const bulkUpdateResponse = bulkUpdateParams.length
+    //   ? await this.client.bulk({
+    //       refresh,
+    //       body: bulkUpdateParams,
+    //       _source_includes: ['originId'],
+    //     })
+    //   : undefined;
 
-    return {
-      saved_objects: expectedBulkUpdateResults.map((expectedResult) => {
-        if (isLeft(expectedResult)) {
-          return expectedResult.error as any;
-        }
+    // return {
+    //   saved_objects: expectedBulkUpdateResults.map((expectedResult) => {
+    //     if (isLeft(expectedResult)) {
+    //       return expectedResult.error as any;
+    //     }
 
-        const {
-          type,
-          id,
-          namespaces,
-          documentToSave,
-          opensearchRequestIndex,
-        } = expectedResult.value;
-        const response = bulkUpdateResponse?.body.items[opensearchRequestIndex] ?? {};
-        // When a bulk update operation is completed, any fields specified in `_sourceIncludes` will be found in the "get" value of the
-        // returned object. We need to retrieve the `originId` if it exists so we can return it to the consumer.
-        const { error, _seq_no: seqNo, _primary_term: primaryTerm, get } = Object.values(
-          response
-        )[0] as any;
+    //     const {
+    //       type,
+    //       id,
+    //       namespaces,
+    //       documentToSave,
+    //       opensearchRequestIndex,
+    //     } = expectedResult.value;
+    //     const response = bulkUpdateResponse?.body.items[opensearchRequestIndex] ?? {};
+    //     // When a bulk update operation is completed, any fields specified in `_sourceIncludes` will be found in the "get" value of the
+    //     // returned object. We need to retrieve the `originId` if it exists so we can return it to the consumer.
+    //     const { error, _seq_no: seqNo, _primary_term: primaryTerm, get } = Object.values(
+    //       response
+    //     )[0] as any;
 
-        // eslint-disable-next-line @typescript-eslint/naming-convention
-        const { [type]: attributes, references, updated_at, permissions } = documentToSave;
-        if (error) {
-          return {
-            id,
-            type,
-            error: getBulkOperationError(error, type, id),
-          };
-        }
+    //     // eslint-disable-next-line @typescript-eslint/naming-convention
+    //     const { [type]: attributes, references, updated_at, permissions } = documentToSave;
+    //     if (error) {
+    //       return {
+    //         id,
+    //         type,
+    //         error: getBulkOperationError(error, type, id),
+    //       };
+    //     }
 
-        const { originId } = get._source;
-        return {
-          id,
-          type,
-          ...(namespaces && { namespaces }),
-          ...(originId && { originId }),
-          updated_at,
-          version: encodeVersion(seqNo, primaryTerm),
-          attributes,
-          references,
-          ...(permissions && { permissions }),
-        };
-      }),
-    };
+    //     const { originId } = get._source;
+    //     return {
+    //       id,
+    //       type,
+    //       ...(namespaces && { namespaces }),
+    //       ...(originId && { originId }),
+    //       updated_at,
+    //       version: encodeVersion(seqNo, primaryTerm),
+    //       attributes,
+    //       references,
+    //       ...(permissions && { permissions }),
+    //     };
+    //   }),
+    // };
+    throw Error('not implemented: bulkUpdate');
   }
 
   /**
@@ -1294,76 +1327,77 @@ export class ExternalSavedObjectsRepository {
     options: ExternalSavedObjectsIncrementCounterOptions = {},
     incrementValue: number = 1
   ): Promise<SavedObject> {
-    if (typeof type !== 'string') {
-      throw new Error('"type" argument must be a string');
-    }
-    if (typeof counterFieldName !== 'string') {
-      throw new Error('"counterFieldName" argument must be a string');
-    }
-    if (!this._allowedTypes.includes(type)) {
-      throw SavedObjectsErrorHelpers.createUnsupportedTypeError(type);
-    }
+    // if (typeof type !== 'string') {
+    //   throw new Error('"type" argument must be a string');
+    // }
+    // if (typeof counterFieldName !== 'string') {
+    //   throw new Error('"counterFieldName" argument must be a string');
+    // }
+    // if (!this._allowedTypes.includes(type)) {
+    //   throw SavedObjectsErrorHelpers.createUnsupportedTypeError(type);
+    // }
 
-    const { migrationVersion, refresh = DEFAULT_REFRESH_SETTING } = options;
-    const namespace = normalizeNamespace(options.namespace);
+    // const { migrationVersion, refresh = DEFAULT_REFRESH_SETTING } = options;
+    // const namespace = normalizeNamespace(options.namespace);
 
-    const time = this._getCurrentTime();
-    let savedObjectNamespace;
-    let savedObjectNamespaces: string[] | undefined;
+    // const time = this._getCurrentTime();
+    // let savedObjectNamespace;
+    // let savedObjectNamespaces: string[] | undefined;
 
-    if (this._registry.isSingleNamespace(type) && namespace) {
-      savedObjectNamespace = namespace;
-    } else if (this._registry.isMultiNamespace(type)) {
-      savedObjectNamespaces = await this.preflightGetNamespaces(type, id, namespace);
-    }
+    // if (this._registry.isSingleNamespace(type) && namespace) {
+    //   savedObjectNamespace = namespace;
+    // } else if (this._registry.isMultiNamespace(type)) {
+    //   savedObjectNamespaces = await this.preflightGetNamespaces(type, id, namespace);
+    // }
 
-    const raw = this._serializer.savedObjectToRaw({
-      id,
-      type,
-      ...(savedObjectNamespace && { namespace: savedObjectNamespace }),
-      ...(savedObjectNamespaces && { namespaces: savedObjectNamespaces }),
-      attributes: { [counterFieldName]: incrementValue },
-      migrationVersion,
-      updated_at: time,
-    } as SavedObjectSanitizedDoc);
-    const { body } = await this.client.update<SavedObjectsRawDocSource>({
-      id: raw._id,
-      index: this.getIndexForType(type),
-      refresh,
-      _source: 'true',
-      body: {
-        script: {
-          source: `
-              if (ctx._source[params.type][params.counterFieldName] == null) {
-                ctx._source[params.type][params.counterFieldName] = params.count;
-              }
-              else {
-                ctx._source[params.type][params.counterFieldName] += params.count;
-              }
-              ctx._source.updated_at = params.time;
-            `,
-          lang: 'painless',
-          params: {
-            count: incrementValue,
-            time,
-            type,
-            counterFieldName,
-          },
-        },
-        upsert: raw._source,
-      },
-    });
-    const { originId } = body.get?._source ?? {};
-    return {
-      id,
-      type,
-      ...(savedObjectNamespaces && { namespaces: savedObjectNamespaces }),
-      ...(originId && { originId }),
-      updated_at: time,
-      references: body.get?._source.references ?? [],
-      version: encodeHitVersion(body),
-      attributes: body.get?._source[type],
-    };
+    // const raw = this._serializer.savedObjectToRaw({
+    //   id,
+    //   type,
+    //   ...(savedObjectNamespace && { namespace: savedObjectNamespace }),
+    //   ...(savedObjectNamespaces && { namespaces: savedObjectNamespaces }),
+    //   attributes: { [counterFieldName]: incrementValue },
+    //   migrationVersion,
+    //   updated_at: time,
+    // } as SavedObjectSanitizedDoc);
+    // const { body } = await this.client.update<SavedObjectsRawDocSource>({
+    //   id: raw._id,
+    //   index: this.getIndexForType(type),
+    //   refresh,
+    //   _source: 'true',
+    //   body: {
+    //     script: {
+    //       source: `
+    //           if (ctx._source[params.type][params.counterFieldName] == null) {
+    //             ctx._source[params.type][params.counterFieldName] = params.count;
+    //           }
+    //           else {
+    //             ctx._source[params.type][params.counterFieldName] += params.count;
+    //           }
+    //           ctx._source.updated_at = params.time;
+    //         `,
+    //       lang: 'painless',
+    //       params: {
+    //         count: incrementValue,
+    //         time,
+    //         type,
+    //         counterFieldName,
+    //       },
+    //     },
+    //     upsert: raw._source,
+    //   },
+    // });
+    // const { originId } = body.get?._source ?? {};
+    // return {
+    //   id,
+    //   type,
+    //   ...(savedObjectNamespaces && { namespaces: savedObjectNamespaces }),
+    //   ...(originId && { originId }),
+    //   updated_at: time,
+    //   references: body.get?._source.references ?? [],
+    //   version: encodeHitVersion(body),
+    //   attributes: body.get?._source[type],
+    // };
+    throw Error('not implemented: incrementCounter');
   }
 
   /**
@@ -1373,6 +1407,7 @@ export class ExternalSavedObjectsRepository {
    */
   private getIndexForType(type: string) {
     return this._registry.getIndex(type) || this._index;
+    // throw Error('not implemented: getIndexForType');
   }
 
   /**
@@ -1384,6 +1419,7 @@ export class ExternalSavedObjectsRepository {
    */
   private getIndicesForTypes(types: string[]) {
     return unique(types.map((t) => this.getIndexForType(t)));
+    // throw Error('not implemented: getIndexForType');
   }
 
   private _getCurrentTime() {
@@ -1391,12 +1427,13 @@ export class ExternalSavedObjectsRepository {
   }
 
   private _rawToSavedObject<T = unknown>(raw: SavedObjectsRawDoc): SavedObject<T> {
-    const savedObject = this._serializer.rawToSavedObject(raw);
-    const { namespace, type } = savedObject;
-    if (this._registry.isSingleNamespace(type)) {
-      savedObject.namespaces = [SavedObjectsUtils.namespaceIdToString(namespace)];
-    }
-    return omit(savedObject, 'namespace') as SavedObject<T>;
+    // const savedObject = this._serializer.rawToSavedObject(raw);
+    // const { namespace, type } = savedObject;
+    // if (this._registry.isSingleNamespace(type)) {
+    //   savedObject.namespaces = [SavedObjectsUtils.namespaceIdToString(namespace)];
+    // }
+    // return omit(savedObject, 'namespace') as SavedObject<T>;
+    throw Error('not implemented: _rawToSavedObject');
   }
 
   /**
@@ -1408,19 +1445,20 @@ export class ExternalSavedObjectsRepository {
    * format mentioned above do not apply.
    */
   private rawDocExistsInNamespace(raw: SavedObjectsRawDoc, namespace: string | undefined) {
-    const rawDocType = raw._source.type;
+    // const rawDocType = raw._source.type;
 
-    // if the type is namespace isolated, or namespace agnostic, we can continue to rely on the guarantees
-    // of the document ID format and don't need to check this
-    if (!this._registry.isMultiNamespace(rawDocType)) {
-      return true;
-    }
+    // // if the type is namespace isolated, or namespace agnostic, we can continue to rely on the guarantees
+    // // of the document ID format and don't need to check this
+    // if (!this._registry.isMultiNamespace(rawDocType)) {
+    //   return true;
+    // }
 
-    const namespaces = raw._source.namespaces;
-    const existsInNamespace =
-      namespaces?.includes(SavedObjectsUtils.namespaceIdToString(namespace)) ||
-      namespaces?.includes('*');
-    return existsInNamespace ?? false;
+    // const namespaces = raw._source.namespaces;
+    // const existsInNamespace =
+    //   namespaces?.includes(SavedObjectsUtils.namespaceIdToString(namespace)) ||
+    //   namespaces?.includes('*');
+    // return existsInNamespace ?? false;
+    throw Error('not implemented: rawDocExistsInNamespace');
   }
 
   /**
@@ -1436,28 +1474,29 @@ export class ExternalSavedObjectsRepository {
    * @throws Will throw an error if the saved object exists and it does not include the target namespace.
    */
   private async preflightGetNamespaces(type: string, id: string, namespace?: string) {
-    if (!this._registry.isMultiNamespace(type)) {
-      throw new Error(`Cannot make preflight get request for non-multi-namespace type '${type}'.`);
-    }
+    // if (!this._registry.isMultiNamespace(type)) {
+    //   throw new Error(`Cannot make preflight get request for non-multi-namespace type '${type}'.`);
+    // }
 
-    const { body, statusCode } = await this.client.get<SavedObjectsRawDocSource>(
-      {
-        id: this._serializer.generateRawId(undefined, type, id),
-        index: this.getIndexForType(type),
-      },
-      {
-        ignore: [404],
-      }
-    );
+    // const { body, statusCode } = await this.client.get<SavedObjectsRawDocSource>(
+    //   {
+    //     id: this._serializer.generateRawId(undefined, type, id),
+    //     index: this.getIndexForType(type),
+    //   },
+    //   {
+    //     ignore: [404],
+    //   }
+    // );
 
-    const indexFound = statusCode !== 404;
-    if (indexFound && isFoundGetResponse(body)) {
-      if (!this.rawDocExistsInNamespace(body, namespace)) {
-        throw SavedObjectsErrorHelpers.createConflictError(type, id);
-      }
-      return getSavedObjectNamespaces(namespace, body);
-    }
-    return getSavedObjectNamespaces(namespace);
+    // const indexFound = statusCode !== 404;
+    // if (indexFound && isFoundGetResponse(body)) {
+    //   if (!this.rawDocExistsInNamespace(body, namespace)) {
+    //     throw SavedObjectsErrorHelpers.createConflictError(type, id);
+    //   }
+    //   return getSavedObjectNamespaces(namespace, body);
+    // }
+    // return getSavedObjectNamespaces(namespace);
+    throw Error('not implemented: preflightGetNamespace');
   }
 
   /**
@@ -1471,27 +1510,28 @@ export class ExternalSavedObjectsRepository {
    * @throws Will throw an error if the saved object is not found, or if it doesn't include the target namespace.
    */
   private async preflightCheckIncludesNamespace(type: string, id: string, namespace?: string) {
-    if (!this._registry.isMultiNamespace(type)) {
-      throw new Error(`Cannot make preflight get request for non-multi-namespace type '${type}'.`);
-    }
+    //   if (!this._registry.isMultiNamespace(type)) {
+    //     throw new Error(`Cannot make preflight get request for non-multi-namespace type '${type}'.`);
+    //   }
 
-    const rawId = this._serializer.generateRawId(undefined, type, id);
-    const { body, statusCode } = await this.client.get<SavedObjectsRawDocSource>(
-      {
-        id: rawId,
-        index: this.getIndexForType(type),
-      },
-      { ignore: [404] }
-    );
+    //   const rawId = this._serializer.generateRawId(undefined, type, id);
+    //   const { body, statusCode } = await this.client.get<SavedObjectsRawDocSource>(
+    //     {
+    //       id: rawId,
+    //       index: this.getIndexForType(type),
+    //     },
+    //     { ignore: [404] }
+    //   );
 
-    const indexFound = statusCode !== 404;
-    if (
-      !indexFound ||
-      !isFoundGetResponse(body) ||
-      !this.rawDocExistsInNamespace(body, namespace)
-    ) {
-      throw SavedObjectsErrorHelpers.createGenericNotFoundError(type, id);
-    }
-    return body;
+    //   const indexFound = statusCode !== 404;
+    //   if (
+    //     !indexFound ||
+    //     !isFoundGetResponse(body) ||
+    //     !this.rawDocExistsInNamespace(body, namespace)
+    //   ) {
+    //     throw SavedObjectsErrorHelpers.createGenericNotFoundError(type, id);
+    //   }
+    //   return body;
+    throw Error('not implemented: preflightCheckIncludesNamespace');
   }
 }

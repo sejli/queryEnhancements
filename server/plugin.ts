@@ -84,12 +84,6 @@ export class QueryEnhancementsPlugin
       dataSourceEnabled: !!dataSource,
     }));
 
-    defineRoutes(this.logger, router, {
-      ppl: pplSearchStrategy,
-      sql: sqlSearchStrategy,
-      sqlasync: sqlAsyncSearchStrategy,
-    });
-
     const typeRegistry = new SavedObjectTypeRegistry();
     const externalSavedObjectsRepo = new ExternalSavedObjectsRepository({
       index: '.ql-datasources',
@@ -112,13 +106,19 @@ export class QueryEnhancementsPlugin
       typeRegistry,
       serializer: new SavedObjectsSerializer(typeRegistry),
       // migrator,
-      // allowedTypes: ['datasource'],
-      allowedTypes: ['datasource', 'config'],
+      allowedTypes: ['data-source'],
+      // allowedTypes: ['datasource', 'config'],
     });
 
     const qlSavedObjectsClient = new SavedObjectsClient(externalSavedObjectsRepo);
-    core.savedObjects.addClientWrapper(0, 'ql_datasources', () => {
-      return qlSavedObjectsClient;
+    // core.savedObjects.addClientWrapper(1000000, 'ql_datasources', () => {
+    //   return qlSavedObjectsClient;
+    // });
+
+    defineRoutes(this.logger, router, qlSavedObjectsClient, {
+      ppl: pplSearchStrategy,
+      sql: sqlSearchStrategy,
+      sqlasync: sqlAsyncSearchStrategy,
     });
 
     this.logger.info('queryEnhancements: Setup complete');

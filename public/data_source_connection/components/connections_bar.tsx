@@ -4,7 +4,7 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { EuiPortal } from '@elastic/eui';
+import { EuiButton, EuiPortal } from '@elastic/eui';
 import { combineLatest } from 'rxjs';
 import { DataPublicPluginStart, IDataPluginServices } from '../../../../../src/plugins/data/public';
 import { QueryEditorExtensionDependencies } from '../../../../../src/plugins/data/public/ui/query_editor/query_editor_extensions/query_editor_extension';
@@ -105,6 +105,16 @@ export const ConnectionsBar: React.FC<ConnectionsProps> = ({ connectionsService 
             handleSelectedConnection(dataSource[0]?.id || undefined)
           }
         />
+        <EuiButton
+          onClick={() => {
+            const a = connectionsService.getConnectionById('mys3').subscribe((connection) => {
+              console.log('connection:', connection)
+            });
+            a.unsubscribe();
+          }}
+        >
+          Click me
+        </EuiButton>
       </div>
     </EuiPortal>
   );

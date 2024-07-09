@@ -9,6 +9,7 @@ import {
   IRouter,
   Logger,
   ResponseError,
+  SavedObjectsClientContract,
 } from '../../../../src/core/server';
 import {
   IDataFrameResponse,
@@ -129,6 +130,7 @@ function defineRoute(
 export function defineRoutes(
   logger: Logger,
   router: IRouter,
+  savedObjectsClient: SavedObjectsClientContract,
   searchStrategies: Record<
     string,
     ISearchStrategy<IOpenSearchDashboardsSearchRequest, IDataFrameResponse>
@@ -137,6 +139,6 @@ export function defineRoutes(
   defineRoute(logger, router, searchStrategies, SEARCH_STRATEGY.PPL);
   defineRoute(logger, router, searchStrategies, SEARCH_STRATEGY.SQL);
   defineRoute(logger, router, searchStrategies, SEARCH_STRATEGY.SQL_ASYNC);
-  registerDataSourceConnectionsRoutes(router);
+  registerDataSourceConnectionsRoutes(router, savedObjectsClient);
   registerQueryAssistRoutes(router);
 }
